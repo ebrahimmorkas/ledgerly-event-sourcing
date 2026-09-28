@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package ledgerly.v1;
+
+option csharp_namespace = "Ledgerly.Api.Grpc";
+
+import "google/api/annotations.proto";
+
+// One service, two protocols: native gRPC for service-to-service calls, and REST/JSON (via the
+// google.api.http annotations and ASP.NET Core JSON transcoding) for browsers and simple clients.
+//
+// Monetary amounts are decimal strings (e.g. "125.50") to avoid floating-point rounding.
+service Ledger {
+  rpc OpenAccount (OpenAccountRequest) returns (AccountReply) {
+    option (google.api.http) = { post: "/v1/accounts" body: "*" };
+  }
+
+  rpc GetAccount (GetAccountRequest) returns (AccountReply) {
+    option (google.api.http) = { get: "/v1/accounts/{account_id}" };
+  }
+
+  rpc Deposit (MoneyRequest) returns (AccountReply) {
+    option (google.api.http) = { post: "/v1/accounts/{account_id}/deposits" body: "*" };
+  }
+
+  rpc Withdraw (MoneyRequest) returns (AccountReply) {
+    option (google.api.http) = { post: "/v1/accounts/{account_id}/withdrawals" body: "*" };
+  }
+
+  rpc Transfer (TransferRequest) returns (TransferReply) {
+    option (google.api.http) = { post: "/v1/transfers" body: "*" };
+  }
+
+  rpc FreezeAccount (FreezeAccountRequest) returns (AccountReply) {
+    option (google.api.http) = { post: "/v1/accounts/{account_id}/freeze" body: "*" };
+  }
+
+  rpc UnfreezeAccount (GetAccountRequest) returns (AccountReply) {
+    option (google.api.http) = { post: "/v1/accounts/{account_id}/unfreeze" };
+  }
+
+  rpc CloseAccount (GetAccountRequest) returns (AccountReply) {
+    option (google.api.http) = { post: "/v1/accounts/{account_id}/close" };
+  }
+}
+
+message OpenAccountRequest {
+  string owner = 1;
+  string currency = 2;
+  string overdraft_limit = 3;
+}
+
+message GetAccountRequest {
+  string account_id = 1;
+}
+
+message MoneyRequest {
+  string account_id = 1;
+  string amount = 2;
+  string reference = 3;
+}
+
+message TransferRequest {
+  // Client-generated key; retrying with the same key never moves money twice.
+  string idempotency_key = 1;
+  string from_account_id = 2;
+  string to_account_id = 3;
+  string amount = 4;
+  string reference = 5;
+}
+
+message FreezeAccountRequest {
+  string account_id = 1;
+  string reason = 2;
+}
+
+message AccountReply {
+  string account_id = 1;
+  string owner = 2;
+  string currency = 3;
+  string balance = 4;
+  string overdraft_limit = 5;
+  string status = 6;
+  int64 version = 7;
+}
+
+message TransferReply {
+  string transfer_id = 1;
+  string from_account_id = 2;
+  string to_account_id = 3;
+  string amount = 4;
+  string currency = 5;
+  string reference = 6;
+  string executed_at = 7;
+  // True when this reply was served from a previous identical request (idempotent retry).
+  bool replayed = 8;
+}
