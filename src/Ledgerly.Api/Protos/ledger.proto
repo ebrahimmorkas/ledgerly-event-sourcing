@@ -42,6 +42,55 @@ service Ledger {
   rpc CloseAccount (GetAccountRequest) returns (AccountReply) {
     option (google.api.http) = { post: "/v1/accounts/{account_id}/close" };
   }
+
+  // Every movement with its running balance, derived from the event stream.
+  rpc GetStatement (StatementRequest) returns (StatementReply) {
+    option (google.api.http) = { get: "/v1/accounts/{account_id}/statement" };
+  }
+
+  // Time travel: the account exactly as it was at a past moment, rebuilt from its events.
+  rpc GetBalanceAt (BalanceAtRequest) returns (BalanceAtReply) {
+    option (google.api.http) = { get: "/v1/accounts/{account_id}/balance" };
+  }
+}
+
+message StatementRequest {
+  string account_id = 1;
+  // Optional ISO-8601 bounds, e.g. "2026-01-01T00:00:00Z".
+  string from = 2;
+  string to = 3;
+}
+
+message StatementEntry {
+  int64 version = 1;
+  string type = 2;
+  string amount = 3;
+  string balance_after = 4;
+  string reference = 5;
+  string counterparty_account_id = 6;
+  string occurred_at = 7;
+}
+
+message StatementReply {
+  string account_id = 1;
+  string currency = 2;
+  string opening_balance = 3;
+  string closing_balance = 4;
+  repeated StatementEntry entries = 5;
+}
+
+message BalanceAtRequest {
+  string account_id = 1;
+  // ISO-8601 timestamp; the balance includes every event recorded up to and including this moment.
+  string as_of = 2;
+}
+
+message BalanceAtReply {
+  string account_id = 1;
+  string as_of = 2;
+  string balance = 3;
+  string status = 4;
+  int64 version = 5;
 }
 
 message OpenAccountRequest {

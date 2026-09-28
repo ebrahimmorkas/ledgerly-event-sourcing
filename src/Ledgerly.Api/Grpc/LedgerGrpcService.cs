@@ -71,6 +71,73 @@ public sealed class LedgerGrpcService(AccountCommands commands, IQuerySession qu
         };
     }
 
+    public override async Task<StatementReply> GetStatement(StatementRequest request, ServerCallContext context)
+    {
+        var id = ParseId(request.AccountId, "account_id");
+        var from = ParseOptionalTimestamp(request.From, "from");
+        var to = ParseOptionalTimestamp(request.To, "to");
+
+        var events = await query.Events.FetchStreamAsync(id, token: context.CancellationToken);
+        if (events.Count == 0)
+        {
+            throw ToRpcException(AccountErrors.NotFound(id));
+        }
+
+        var statement = StatementBuilder.Build(
+            events.Select(e => new RecordedEvent(e.Version, e.Data, e.Timestamp)).ToList(), from, to);
+
+        var reply = new StatementReply
+        {
+            AccountId = id.ToString(),
+            Currency = statement.Currency,
+            OpeningBalance = Format(statement.OpeningBalance),
+            ClosingBalance = Format(statement.ClosingBalance)
+        };
+        reply.Entries.AddRange(statement.Lines.Select(line => new StatementEntry
+        {
+            Version = line.Version,
+            Type = line.Type,
+            Amount = Format(line.Amount),
+            BalanceAfter = Format(line.BalanceAfter),
+            Reference = line.Reference,
+            CounterpartyAccountId = line.Counterparty?.ToString() ?? string.Empty,
+            OccurredAt = line.OccurredAt.ToString("O", CultureInfo.InvariantCulture)
+        }));
+
+        return reply;
+    }
+
+    public override async Task<BalanceAtReply> GetBalanceAt(BalanceAtRequest request, ServerCallContext context)
+    {
+        var id = ParseId(request.AccountId, "account_id");
+        var asOf = ParseOptionalTimestamp(request.AsOf, "as_of")
+            ?? throw new RpcException(new Status(StatusCode.InvalidArgument, "'as_of' is required."));
+
+        // Only the events recorded up to the requested moment are replayed.
+        var events = await query.Events.FetchStreamAsync(id, timestamp: asOf, token: context.CancellationToken);
+        if (events.Count == 0)
+        {
+            throw ToRpcException(new Error("Account.NotFound", $"Account '{id}' did not exist at {asOf:O}.", ErrorType.NotFound));
+        }
+
+        var account = Account.Replay(events.Select(e => e.Data));
+        return new BalanceAtReply
+        {
+            AccountId = id.ToString(),
+            AsOf = asOf.ToString("O", CultureInfo.InvariantCulture),
+            Balance = Format(account.Balance),
+            Status = account.Status.ToString(),
+            Version = events[^1].Version
+        };
+    }
+
+    internal static DateTimeOffset? ParseOptionalTimestamp(string value, string field) =>
+        string.IsNullOrWhiteSpace(value)
+            ? null
+            : DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var timestamp)
+                ? timestamp
+                : throw new RpcException(new Status(StatusCode.InvalidArgument, $"'{field}' must be an ISO-8601 timestamp."));
+
     internal static AccountReply Map(AccountSummary summary) => new()
     {
         AccountId = summary.Id.ToString(),
