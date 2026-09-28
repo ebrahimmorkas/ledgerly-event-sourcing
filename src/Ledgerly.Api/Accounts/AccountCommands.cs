@@ -23,7 +23,7 @@ public sealed class AccountCommands(IDocumentStore store, TimeProvider timeProvi
         }
 
         await using var session = store.LightweightSession();
-        session.Events.StartStream<Account>(accountId, decision.Value);
+        session.Events.StartStream(accountId, decision.Value);
         await session.SaveChangesAsync(ct);
 
         return (await session.LoadAsync<AccountSummary>(accountId, ct))!;
@@ -66,28 +66,28 @@ public sealed class AccountCommands(IDocumentStore store, TimeProvider timeProvi
                 return Replay(previous, fromId, toId, amount, reference);
             }
 
-            var from = await session.Events.FetchForWriting<Account>(fromId, ct);
-            var to = await session.Events.FetchForWriting<Account>(toId, ct);
-            if (from.Aggregate is null)
+            var from = await LoadAsync(session, fromId, ct);
+            var to = await LoadAsync(session, toId, ct);
+            if (from is null)
             {
                 return AccountErrors.NotFound(fromId);
             }
 
-            if (to.Aggregate is null)
+            if (to is null)
             {
                 return AccountErrors.NotFound(toId);
             }
 
             var transferId = Guid.CreateVersion7();
-            var decision = from.Aggregate.TransferTo(to.Aggregate, transferId, amount, reference, Now);
+            var decision = from.Account.TransferTo(to.Account, transferId, amount, reference, Now);
             if (decision.IsFailure)
             {
                 return decision.Error!;
             }
 
             var (debit, credit) = decision.Value;
-            from.AppendOne(debit);
-            to.AppendOne(credit);
+            session.Events.Append(fromId, from.Version + 1, debit);
+            session.Events.Append(toId, to.Version + 1, credit);
 
             var record = new TransferRecord
             {
@@ -96,7 +96,7 @@ public sealed class AccountCommands(IDocumentStore store, TimeProvider timeProvi
                 FromAccountId = fromId,
                 ToAccountId = toId,
                 Amount = amount,
-                Currency = from.Aggregate.Currency,
+                Currency = from.Account.Currency,
                 Reference = debit.Reference,
                 ExecutedAt = debit.At
             };
@@ -133,19 +133,20 @@ public sealed class AccountCommands(IDocumentStore store, TimeProvider timeProvi
         {
             await using var session = store.LightweightSession();
 
-            var stream = await session.Events.FetchForWriting<Account>(accountId, ct);
-            if (stream.Aggregate is null)
+            var stream = await LoadAsync(session, accountId, ct);
+            if (stream is null)
             {
                 return AccountErrors.NotFound(accountId);
             }
 
-            var decision = decide(stream.Aggregate);
+            var decision = decide(stream.Account);
             if (decision.IsFailure)
             {
                 return decision.Error!;
             }
 
-            stream.AppendOne(decision.Value);
+            // Expected version = current version + 1: fails if anyone appended to the stream meanwhile.
+            session.Events.Append(accountId, stream.Version + 1, decision.Value);
 
             try
             {
@@ -160,6 +161,20 @@ public sealed class AccountCommands(IDocumentStore store, TimeProvider timeProvi
 
         return TransferErrors.TooMuchContention;
     }
+
+    /// <summary>
+    /// Rebuilds the aggregate from its stream using the domain's own replay logic, which keeps the domain
+    /// project free of any event-store dependency. Returns the stream version for optimistic concurrency.
+    /// </summary>
+    private static async Task<LoadedAccount?> LoadAsync(IDocumentSession session, Guid accountId, CancellationToken ct)
+    {
+        var events = await session.Events.FetchStreamAsync(accountId, token: ct);
+        return events.Count == 0
+            ? null
+            : new LoadedAccount(Account.Replay(events.Select(e => e.Data)), events[^1].Version);
+    }
+
+    private sealed record LoadedAccount(Account Account, long Version);
 
     private static Result<(TransferRecord, bool)> Replay(TransferRecord previous, Guid fromId, Guid toId, decimal amount, string reference) =>
         previous.Matches(fromId, toId, amount, reference)
