@@ -129,6 +129,45 @@ public sealed class LedgerTests(LedgerApiFactory factory)
     }
 
     [Fact]
+    public async Task Statement_Should_Show_Every_Movement_With_Running_Balance()
+    {
+        Assert.SkipUnless(LedgerApiFactory.IsEnabled, SkipReason);
+        var id = await OpenAsync(deposit: "100");
+        var other = await OpenAsync();
+        await Ledger.WithdrawAsync(new MoneyRequest { AccountId = id, Amount = "10", Reference = "coffee" }, cancellationToken: Ct);
+        await Ledger.TransferAsync(new TransferRequest
+        {
+            IdempotencyKey = Guid.NewGuid().ToString(), FromAccountId = id, ToAccountId = other, Amount = "40", Reference = "rent"
+        }, cancellationToken: Ct);
+
+        var statement = await Ledger.GetStatementAsync(new StatementRequest { AccountId = id }, cancellationToken: Ct);
+
+        statement.Entries.Select(e => e.Type).ShouldBe(["Deposit", "Withdrawal", "TransferOut"]);
+        statement.Entries.Select(e => e.BalanceAfter).ShouldBe(["100.00", "90.00", "50.00"]);
+        statement.Entries[2].CounterpartyAccountId.ShouldBe(other);
+        statement.ClosingBalance.ShouldBe("50.00");
+    }
+
+    [Fact]
+    public async Task Balance_At_A_Past_Moment_Should_Ignore_Later_Events()
+    {
+        Assert.SkipUnless(LedgerApiFactory.IsEnabled, SkipReason);
+        var id = await OpenAsync(deposit: "100");
+
+        await Task.Delay(1500, Ct);
+        var checkpoint = DateTimeOffset.UtcNow;
+        await Task.Delay(1500, Ct);
+
+        await Ledger.DepositAsync(new MoneyRequest { AccountId = id, Amount = "250", Reference = "bonus" }, cancellationToken: Ct);
+
+        var past = await Ledger.GetBalanceAtAsync(new BalanceAtRequest { AccountId = id, AsOf = checkpoint.ToString("O") }, cancellationToken: Ct);
+        var now = await Ledger.GetBalanceAtAsync(new BalanceAtRequest { AccountId = id, AsOf = DateTimeOffset.UtcNow.AddMinutes(1).ToString("O") }, cancellationToken: Ct);
+
+        past.Balance.ShouldBe("100.00");
+        now.Balance.ShouldBe("350.00");
+    }
+
+    [Fact]
     public async Task Rest_Endpoints_Should_Be_Available_Through_Json_Transcoding()
     {
         Assert.SkipUnless(LedgerApiFactory.IsEnabled, SkipReason);
